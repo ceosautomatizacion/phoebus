@@ -19,16 +19,19 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 import org.epics.vtype.VType;
 import org.phoebus.applications.alarm.AlarmSystem;
 import org.phoebus.applications.alarm.Messages;
 import org.phoebus.applications.alarm.client.ClientState;
+import org.phoebus.applications.alarm.messages.AlarmDetail;
 import org.phoebus.applications.alarm.model.AlarmState;
 import org.phoebus.applications.alarm.model.AlarmTreeItem;
 import org.phoebus.applications.alarm.model.AlarmTreeLeaf;
 import org.phoebus.applications.alarm.model.EnabledState;
 import org.phoebus.applications.alarm.model.SeverityLevel;
+import org.phoebus.applications.alarm.model.TitleDetail;
 import org.phoebus.applications.alarm.model.TitleDetailDelay;
 import org.phoebus.applications.alarm.server.actions.AutomatedActions;
 import org.phoebus.applications.alarm.server.actions.AutomatedActionsHelper;
@@ -39,18 +42,9 @@ import org.phoebus.pv.PVPool;
 import io.reactivex.rxjava3.core.BackpressureStrategy;
 import io.reactivex.rxjava3.disposables.Disposable;
 
-/** Alarm tree leaf
- *
- *  <p>Has PV,
- *  alarm state (which latches etc.)
- *  as well as the 'current' state of the PV.
- *
- *  @author Kay Kasemir
- */
 @SuppressWarnings("nls")
 public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTreeLeaf
 {
-    /** Timer used to check for the initial connection */
     private static final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(runnable ->
     {
         final Thread thread = new Thread(runnable);
@@ -60,25 +54,14 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
     });
 
     private final ServerModel model;
-
     private volatile String description = "";
-
     private final AlarmLogic logic;
-
     private final AtomicReference<PV> pv = new AtomicReference<>();
-
     private volatile Disposable pv_flow;
-
-    /** Track connection state */
     private volatile boolean is_connected = false;
-
     private volatile ScheduledFuture<?> connection_timeout_task = null;
-
     private final AtomicReference<AutomatedActions> automated_actions = new AtomicReference<>();
 
-    /** Filter that might be used to compute 'enabled' state;
-     *  can be <code>null</code>
-     */
     private volatile Filter filter = null;
     private volatile EnabledState enabled = new EnabledState(true);
     private volatile EnabledDateTimeFilter enabled_datetime_filter = null;
@@ -98,22 +81,22 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
             current_state = new AlarmState(initial.current_severity, initial.current_message, "?", initial.time);
             alarm_state = new AlarmState(initial.severity, initial.message, initial.value, initial.time);
         }
+
         final AlarmLogicListener listener = new AlarmLogicListener()
         {
             @Override
             public void alarmStateChanged(final AlarmState current, final AlarmState alarm)
             {
-                // Send alarm and current state to clients
                 logger.log(Level.FINER, () -> getPathName() + " changes to " + current + ", " + alarm);
+
                 final ClientState new_state = new ClientState(alarm,
                                                               current.severity,
                                                               current.message);
-                model.sendStateUpdate(getPathName(), new_state);
 
-                // Update automated actions
+                model.sendStateUpdate(getPathName(), new_state, toAlarmDetailList(getGuidance()));
+
                 AutomatedActionsHelper.update(automated_actions, alarm.severity);
 
-                // Whenever logic computes new state, maximize up parent tree
                 final AlarmServerNode parent = getParent();
                 if (parent != null)
                     parent.maximizeSeverity();
@@ -127,7 +110,18 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
                 model.sendAnnunciatorMessage(getPathName(), severity, description);
             }
         };
+
         logic = new AlarmLogic(listener, true, true, 0, 0, current_state, alarm_state, 0);
+    }
+
+    private List<AlarmDetail> toAlarmDetailList(final List<TitleDetail> guidance)
+    {
+        if (guidance == null || guidance.isEmpty())
+            return null;
+
+        return guidance.stream()
+                       .map(item -> new AlarmDetail(item.title, item.detail))
+                       .collect(Collectors.toList());
     }
 
     @Override
@@ -143,9 +137,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         return logic.getCurrentState();
     }
 
-    /** Acknowledge current alarm severity
-     *  @param acknowledge Acknowledge or un-acknowledge?
-     */
     public void acknowledge(final boolean acknowledge)
     {
         logic.acknowledge(acknowledge);
@@ -178,10 +169,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         return enabled.enabled;
     }
 
-
-    /** @param enable Enable the PV?
-     *  @return <code>true</code> if this is a change
-     */
     @Override
     public boolean setEnabled(final boolean enable)
     {
@@ -198,10 +185,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         return true;
     }
 
-    /** @param enabled_state Enable the PV?
-     *  @return <code>true</code> if this is a change
-     * Set as listener to enable
-     */
     @Override
     public boolean setEnabled(final EnabledState enabled_state)
     {
@@ -214,9 +197,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         return true;
     }
 
-    /** @param enabled_date Enable the PV?
-     *  @return <code>true</code> if this is a change
-     */
     @Override
     public boolean setEnabledDate(final LocalDateTime enabled_date)
     {
@@ -224,7 +204,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         if (enabled.equals(new_enabled_state)) {
             return false;
         }
-        // if before current time, do not accept.
         if (enabled_date.isBefore(LocalDateTime.now())) {
             logger.log(Level.WARNING, "Enabled date is before current time.");
             return false;
@@ -233,7 +212,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         enabled = new_enabled_state;
         logic.setEnabled(false);
 
-        // cancel existing datetime filter and add new
         if (enabled_datetime_filter != null) {
             enabled_datetime_filter.cancel();
         }
@@ -242,8 +220,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         return true;
     }
 
-
-    /** @return object representing enabled state */
     @Override
     public LocalDateTime getEnabledDate()
     {
@@ -251,12 +227,10 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         return safe_copy;
     }
 
-    /** @return object representing enabled state */
     @Override
     public EnabledState getEnabled() {
         return enabled;
     }
-
 
     @Override
     public boolean isLatching()
@@ -341,7 +315,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         return true;
     }
 
-
     @Override
     public boolean setActions(final List<TitleDetailDelay> actions)
     {
@@ -400,7 +373,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         }
     }
 
-    /** Listener to filter */
     private void filterChanged(final double value)
     {
         final boolean new_enable_state = value > 0.0;
@@ -409,13 +381,10 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         logic.setEnabled(new_enable_state);
     }
 
-    /** Listener to filter */
     private void enabledDateTimeFilterChanged(final boolean enabled)
     {
         setEnabled(enabled);
 
-        // Alarm server should _listen_ to config changes, not send them, with one exception:
-        // If a 'shelved' alarm gets re-enabled by the alarm server, it sends that out
         if (enabled)
             model.sendConfigUpdate(getPathName(), this);
     }
@@ -424,21 +393,14 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
     {
         try
         {
-            // Cancel delayed
             logic.dispose();
 
-            // Cancel ongoing actions, but don't set to null
-            // because in case there's another start() it needs
-            // to find & trigger the actions
             AutomatedActionsHelper.cancel(automated_actions);
 
             final PV the_pv = pv.getAndSet(null);
-            // Be lenient if already stopped,
-            // or never started because ! isEnabled()
             if (the_pv == null)
                 return;
 
-            // Stop checking for initial connection
             final ScheduledFuture<?> conn_to = connection_timeout_task;
             if (conn_to != null)
             {
@@ -450,12 +412,10 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
                 enabled_datetime_filter.cancel();
             }
 
-            // Stop filter
             final Filter safe_copy = filter;
             if (safe_copy != null)
                 safe_copy.stop();
 
-            // Dispose PV
             pv_flow.dispose();
             PVPool.releasePV(the_pv);
             logger.log(Level.FINE, "Stop " + the_pv.getName());
@@ -467,13 +427,11 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         is_connected = false;
     }
 
-    /** @return <code>true</code> if PV is connected */
     public boolean isConnected()
     {
         return is_connected;
     }
 
-    /** @param value Value received from PV */
     private void handleValueUpdate(final VType value)
     {
         try
@@ -483,14 +441,14 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
                 disconnected();
                 return;
             }
-            // Inspect alarm state of received value
+
             is_connected = true;
             final SeverityLevel new_severity = SeverityLevelHelper.decodeSeverity(value);
             final String new_message = SeverityLevelHelper.getStatusMessage(value);
             final AlarmState received = new AlarmState(new_severity, new_message,
                                                        VTypeHelper.toString(value),
                                                        VTypeHelper.getTimestamp(value));
-            // Update alarm logic
+
             logic.computeNewState(received);
             logger.log(Level.FINER, () -> getPathName() + " received " + value + " -> " + logic);
         }
@@ -500,7 +458,6 @@ public class AlarmServerPV extends AlarmTreeItem<AlarmState> implements AlarmTre
         }
     }
 
-    /** Handle fact that PV disconnected */
     private void disconnected()
     {
         logger.log(Level.FINE, getPathName() + " disconnected");
