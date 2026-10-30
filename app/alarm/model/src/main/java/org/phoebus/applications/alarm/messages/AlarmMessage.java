@@ -39,6 +39,7 @@ public class AlarmMessage implements Serializable {
      * Data
      */
     private String host;
+
     /**
      * Data
      */

@@ -7,30 +7,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.phoebus.applications.alarm.model.EnabledState;
-
+import java.util.List;
+import java.util.Map;
 import java.io.Serializable;
 import java.util.List;
 
-/**
- * A utility class with object mapper for the various alarm messages
- * 
- * @author Kunal Shroff
- *
- */
-
-
 @JsonInclude(Include.NON_NULL)
-public class AlarmMessageUtil implements Serializable{
+public class AlarmMessageUtil implements Serializable {
 
-    // Object mapper for the alarm state messages
-   @JsonIgnore
+    @JsonIgnore
     static final ObjectMapper objectStateMapper = new ObjectMapper();
     static {
         objectStateMapper.registerModule(new JavaTimeModule());
-        objectStateMapper.addMixIn(AlarmMessageUtil.class, AlarmStateJsonMessage.class);
+        objectStateMapper.addMixIn(AlarmStateMessage.class, AlarmStateJsonMessage.class);
     }
 
-    // Object mapper for the alarm config messages
     @JsonIgnore
     static final ObjectMapper objectConfigMapper = new ObjectMapper();
     static {
@@ -42,7 +33,6 @@ public class AlarmMessageUtil implements Serializable{
         objectConfigMapper.addMixIn(AlarmMessageUtil.class, AlarmConfigJsonMessage.class);
     }
 
-    // Object mapper for all other alarm messages
     @JsonIgnore
     static final ObjectMapper objectMapper = new ObjectMapper();
     static {
@@ -50,23 +40,21 @@ public class AlarmMessageUtil implements Serializable{
     }
 
     private static class AlarmStateJsonMessage {
-        @JsonIgnore
-        private String severity;
-        @JsonIgnore
-        private String message;
-        @JsonIgnore
-        private String value;
-        @JsonIgnore
-        private String current_severity;
-        @JsonIgnore
-        private String current_message;
-        @JsonIgnore
-        private String mode;
-	    @JsonIgnore
-        private boolean notify;
-        @JsonIgnore
-        private boolean latch;
-    }
+    private String severity;
+    private String message;
+    private String value;
+    private Map<String, String> time;
+    private String current_severity;
+    private String current_message;
+    private String mode;
+    private boolean notify;
+    private boolean latch;
+    private String config;
+    private String pv;
+    private String user;
+    private String host;
+    private List<AlarmDetail> guidance;
+}
 
     private static class AlarmConfigJsonMessage {
         @JsonIgnore
@@ -88,5 +76,4 @@ public class AlarmMessageUtil implements Serializable{
         @JsonIgnore
         private List<AlarmDetail> actions;
     }
-
 }
